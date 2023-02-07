@@ -36,7 +36,7 @@ else
 endif
 
 prep:
-	@git fetch --unshallow ||:
+	@git fetch --unshallow 2> /dev/null ||:
 	@git fetch origin 'refs/tags/*:refs/tags/*'
 ifeq ($(SKIP_BUILD),true)
 	@echo "SKIP_BUILD is true, exiting with 1"
@@ -57,7 +57,6 @@ build: prep
 		${DOCKER_BUILD_FLAGS} \
 		--load \
 		--pull \
-		--no-cache \
 		--build-arg build_type=$(BUILD_TYPE) \
 		--build-arg vcs_ref=$(vcs_ref) \
 		--build-arg build_date=$(build_date) \
