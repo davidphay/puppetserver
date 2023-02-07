@@ -1,11 +1,11 @@
 ARG build_type=edge
-ARG UBUNTU_CODENAME=jammy
+ARG UBUNTU_CODENAME=focal
 
 ######################################################
 # base
 ######################################################
 
-FROM ubuntu:22.04 as base
+FROM ubuntu:20.04 as base
 
 ARG PACKAGES=ca-certificates\ git
 ARG DUMB_INIT_VERSION="1.2.2"
@@ -68,7 +68,7 @@ RUN chmod +x /docker-entrypoint.sh /healthcheck.sh /docker-entrypoint.d/*.sh && 
 # edge (build from source)
 ######################################################
 
-FROM ubuntu:22.04 as build
+FROM ubuntu:20.04 as build
 
 ENV LANG="en_US.UTF-8"
 
