@@ -1,20 +1,20 @@
 ARG build_type=edge
-ARG UBUNTU_CODENAME=bionic
+ARG UBUNTU_CODENAME=jammy
 
 ######################################################
 # base
 ######################################################
 
-FROM ubuntu:18.04 as base
+FROM ubuntu:22.04 as base
 
 ARG PACKAGES=ca-certificates\ git
 ARG DUMB_INIT_VERSION="1.2.2"
 
-LABEL org.label-schema.maintainer="Puppet Release Team <release@puppet.com>" \
+LABEL org.label-schema.maintainer="Phayanouvonb David <david.phayanouvong@systemit.fr>" \
       org.label-schema.vendor="Puppet" \
-      org.label-schema.url="https://github.com/puppetlabs/puppetserver" \
+      org.label-schema.url="https://github.com/davidphay/puppetserver" \
       org.label-schema.license="Apache-2.0" \
-      org.label-schema.vcs-url="https://github.com/puppetlabs/puppetserver" \
+      org.label-schema.vcs-url="https://github.com/davidphay/puppetserver" \
       org.label-schema.schema-version="1.0" \
       org.label-schema.dockerfile="/Dockerfile"
 
@@ -68,7 +68,7 @@ RUN chmod +x /docker-entrypoint.sh /healthcheck.sh /docker-entrypoint.d/*.sh && 
 # edge (build from source)
 ######################################################
 
-FROM ubuntu:18.04 as build
+FROM ubuntu:22.04 as build
 
 ENV LANG="en_US.UTF-8"
 
@@ -85,8 +85,8 @@ RUN apt-get update && \
             ruby-dev \
             g++ \
             make && \
-    git config --global user.name "Puppet Release Team" && \
-    git config --global user.email "release@puppet.com" && \
+    git config --global user.name "David Phayanouvong" && \
+    git config --global user.email "david.phayanouvong@systemit.fr" && \
     chmod 0755 /usr/local/bin/lein && \
     /usr/local/bin/lein && \
     gem install --no-doc bundler fpm

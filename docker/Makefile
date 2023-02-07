@@ -57,6 +57,7 @@ build: prep
 		${DOCKER_BUILD_FLAGS} \
 		--load \
 		--pull \
+		--no-cache \
 		--build-arg build_type=$(BUILD_TYPE) \
 		--build-arg vcs_ref=$(vcs_ref) \
 		--build-arg build_date=$(build_date) \
