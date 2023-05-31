@@ -8,7 +8,7 @@ ARG UBUNTU_CODENAME=focal
 FROM ubuntu:20.04 as base
 
 ARG PACKAGES=ca-certificates\ git
-ARG DUMB_INIT_VERSION="1.2.2"
+ARG DUMB_INIT_VERSION="1.2.5"
 
 LABEL org.label-schema.maintainer="Phayanouvonb David <david.phayanouvong@systemit.fr>" \
       org.label-schema.vendor="Puppet" \
@@ -120,7 +120,7 @@ FROM base as release
 ARG version
 ARG UBUNTU_CODENAME
 ARG install_path=puppetserver="$version"-1"$UBUNTU_CODENAME"
-ARG deb_uri=https://apt.puppetlabs.com/puppet7-release-$UBUNTU_CODENAME.deb
+ARG deb_uri=https://apt.puppetlabs.com/puppet8-release-$UBUNTU_CODENAME.deb
 
 ######################################################
 # final image
