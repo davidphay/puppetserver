@@ -1,14 +1,14 @@
 ARG build_type=edge
-ARG UBUNTU_CODENAME=focal
+ARG UBUNTU_CODENAME=jammy
 
 ######################################################
 # base
 ######################################################
 
-FROM ubuntu:20.04 as base
+FROM ubuntu:22.04 as base
 
 ARG PACKAGES=ca-certificates\ git
-ARG DUMB_INIT_VERSION="1.2.2"
+ARG DUMB_INIT_VERSION="1.2.5"
 
 LABEL org.label-schema.maintainer="Phayanouvonb David <david.phayanouvong@systemit.fr>" \
       org.label-schema.vendor="Puppet" \
@@ -68,7 +68,7 @@ RUN chmod +x /docker-entrypoint.sh /healthcheck.sh /docker-entrypoint.d/*.sh && 
 # edge (build from source)
 ######################################################
 
-FROM ubuntu:20.04 as build
+FROM ubuntu:22.04 as build
 
 ENV LANG="en_US.UTF-8"
 
@@ -100,8 +100,8 @@ ENV RUBYOPT=-r/puppetserver/docker/ruby-docker-copy-patch
 
 RUN lein clean && \
     lein install && \
-    EZBAKE_ALLOW_UNREPRODUCIBLE_BUILDS=true EZBAKE_NODEPLOY=true COW=base-focal-amd64.cow MOCK='' GEM_SOURCE=https://rubygems.org lein with-profile ezbake ezbake local-build && \
-    mv /puppetserver/output/deb/focal/*/*.deb /puppetserver.deb
+    EZBAKE_ALLOW_UNREPRODUCIBLE_BUILDS=true EZBAKE_NODEPLOY=true COW=base-jammy-amd64.cow MOCK='' GEM_SOURCE=https://rubygems.org lein with-profile ezbake ezbake local-build && \
+    mv /puppetserver/output/deb/jammy/*/*.deb /puppetserver.deb
 
 FROM base as edge
 
