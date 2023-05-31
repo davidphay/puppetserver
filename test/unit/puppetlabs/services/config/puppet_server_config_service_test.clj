@@ -1,13 +1,13 @@
 (ns puppetlabs.services.config.puppet-server-config-service-test
-  (:require [clojure.test :refer :all]
-            [puppetlabs.services.protocols.puppet-server-config :refer :all]
-            [puppetlabs.services.config.puppet-server-config-service :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
+            [puppetlabs.services.protocols.puppet-server-config :refer [get-config get-in-config]]
+            [puppetlabs.services.config.puppet-server-config-service :refer [puppet-server-config-service]]
             [puppetlabs.services.config.puppet-server-config-core :as core]
             [puppetlabs.services.jruby.jruby-puppet-testutils :as jruby-testutils]
             [puppetlabs.trapperkeeper.app :as tk-app]
             [puppetlabs.trapperkeeper.testutils.bootstrap :as tk-testutils]
-            [puppetlabs.trapperkeeper.testutils.logging :refer [with-test-logging]]
-            [puppetlabs.services.jruby.jruby-puppet-testutils :as jruby-testutils]
+            [puppetlabs.puppetserver.certificate-authority :as ca]
+            [puppetlabs.trapperkeeper.testutils.logging :refer [with-test-logging logged?]]
             [clj-semver.core :as semver]
             [puppetlabs.trapperkeeper.core :as tk]
             [puppetlabs.trapperkeeper.internal :as tk-internal]
@@ -83,9 +83,7 @@
                                   "default value, should not be returned")))))))))
 
 (deftest config-key-conflicts
-  (testing (str
-             "Providing config values that should be read from Puppet results "
-             "in an error that mentions all offending config keys.")
+  (testing "Providing config values that should be read from Puppet results in an error that mentions all offending config keys."
     (with-test-logging
       (ks-testutils/with-no-jvm-shutdown-hooks
        (let [config (assoc required-config :cacrl "bogus" :cacert "meow")
@@ -98,6 +96,64 @@
               (tk-internal/throw-app-error-if-exists! app)))
          (tk-app/stop app))))))
 
+(deftest certificate-authority-override
+  (tk-testutils/with-app-with-config
+    app
+    service-and-deps
+    (-> required-config
+        (assoc :my-config {:foo "bar"}))
+    (testing (str "certificate-authority settings work")
+      (with-test-logging
+        (ks-testutils/with-no-jvm-shutdown-hooks
+          (let [config (-> (jruby-testutils/jruby-puppet-tk-config
+                    (jruby-testutils/jruby-puppet-config {:max-active-instances 2
+                                                          :borrow-timeout
+                                                          12}))
+                    (assoc :webserver {:port 8081
+                                       :shutdown-timeout-seconds 1}))
+                service (tk-app/get-service app :PuppetServerConfigService)
+                service-config (get-config service)
+                merged-config (merge service-config  {:certificate-authority
+                                                      {:allow-auto-renewal true
+                                                       :auto-renewal-cert-ttl "50d"
+                                                       :ca-ttl "50d"}})
+                settings (ca/config->ca-settings merged-config)
+                app (tk/boot-services-with-config
+                      (service-and-deps-with-mock-jruby config)
+                       config)]
+            (is (= true (:allow-auto-renewal settings)))
+            (is (= 4320000 (:auto-renewal-cert-ttl settings)))
+            (is (= 4320000 (:ca-ttl settings)))
+            (is (logged? #"Detected ca-ttl setting in CA config which will take precedence over puppet.conf setting"))
+            (tk-app/stop app)))))))
+
+(deftest certificate-authority-defaults
+  (tk-testutils/with-app-with-config
+    app
+    service-and-deps
+    (-> required-config
+        (assoc :my-config {:foo "bar"}))
+    (testing (str "certificate-authority settings work")
+      (with-test-logging
+        (ks-testutils/with-no-jvm-shutdown-hooks
+          (let [config (-> (jruby-testutils/jruby-puppet-tk-config
+                    (jruby-testutils/jruby-puppet-config {:max-active-instances 2
+                                                          :borrow-timeout
+                                                          12}))
+                    (assoc :webserver {:port 8081
+                                       :shutdown-timeout-seconds 1}))
+                service (tk-app/get-service app :PuppetServerConfigService)
+                service-config (get-config service)
+                merged-config (merge service-config  {:certificate-authority
+                                                      {}})
+                settings (ca/config->ca-settings merged-config)
+                app (tk/boot-services-with-config
+                      (service-and-deps-with-mock-jruby config)
+                       config)]
+            (is (= false (:allow-auto-renewal settings)))
+            (is (= 5184000 (:auto-renewal-cert-ttl settings)))
+            (tk-app/stop app)))))))
+
 (deftest multi-webserver-setting-override
   (let [webserver-config {:ssl-cert "thehostcert"
                           :ssl-key "thehostprivkey"
@@ -105,8 +161,7 @@
                           :ssl-crl-path "thecacrl"
                           :port 8081
                           :default-server true}]
-    (testing (str "webserver settings not overridden when mult-webserver config is provided"
-                  "and full ssl cert configuration is available")
+    (testing "webserver settings not overridden when mult-webserver config is provided and full ssl cert configuration is available"
       (with-test-logging
        (let [config (assoc required-config :webserver
                                            {:puppet-server webserver-config})]
@@ -116,8 +171,7 @@
           config
           (is (logged? #"Not overriding webserver settings with values from core Puppet"))))))
 
-    (testing (str "webserver settings not overridden when single webserver is provided"
-                  "and full ssl cert configuration is available")
+    (testing "webserver settings not overridden when single webserver is provided and full ssl cert configuration is available"
       (let [config (assoc required-config :webserver webserver-config)]
         (with-test-logging
          (tk-testutils/with-app-with-config

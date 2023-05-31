@@ -1,10 +1,11 @@
 (ns puppetlabs.services.ca.ca-testutils
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [is]]
             [me.raynes.fs :as fs]
             [puppetlabs.kitchensink.core :as ks]
-            [puppetlabs.puppetserver.certificate-authority :as ca]
+            [puppetlabs.kitchensink.file :as ks-file]
             [puppetlabs.services.jruby.jruby-puppet-testutils :as jruby-testutils])
-  (:import (java.io ByteArrayInputStream)))
+  (:import (java.io ByteArrayInputStream)
+           (java.util.concurrent.locks ReentrantReadWriteLock ReentrantLock)))
 
 (defn assert-subject [o subject]
   (is (= subject (-> o .getSubjectX500Principal .getName))))
@@ -54,8 +55,11 @@
    :allow-authorization-extensions   false
    :allow-duplicate-certs            false
    :allow-subject-alt-names          false
+   :allow-auto-renewal               false
+   :auto-renewal-cert-ttl            "60d"
    :ca-name                          "test ca"
    :ca-ttl                           1
+   :allow-header-cert-info           false
    :cadir                            (str cadir)
    :cacrl                            (str cadir "/ca_crl.pem")
    :cacert                           (str cadir "/ca_crt.pem")
@@ -72,7 +76,13 @@
    :infra-nodes-path                 (str cadir "/ca/infra_inventory.txt")
    :infra-node-serials-path          (str cadir "/infra_serials")
    :infra-crl-path                   (str cadir "/infra_crl.pem")
-   :enable-infra-crl                 false})
+   :enable-infra-crl                 false
+   :serial-lock                      (new ReentrantReadWriteLock)
+   :serial-lock-timeout-seconds      5
+   :crl-lock                         (new ReentrantReadWriteLock)
+   :crl-lock-timeout-seconds         5
+   :inventory-lock                   (new ReentrantLock)
+   :inventory-lock-timeout-seconds   5})
 
 (defn ca-sandbox!
   "Copy the `cadir` to a temporary directory and return
@@ -82,5 +92,5 @@
   (let [tmp-ssldir (ks/temp-dir)]
     (fs/copy-dir cadir tmp-ssldir)
     ;; This is to ensure no warnings are logged during tests
-    (ca/set-file-perms (str tmp-ssldir "/ca/ca_key.pem") "rw-r-----")
+    (ks-file/set-perms (str tmp-ssldir "/ca/ca_key.pem") "rw-r-----")
     (ca-settings (str tmp-ssldir "/ca"))))

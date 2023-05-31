@@ -1,5 +1,5 @@
 (ns puppetlabs.services.jruby.jruby-puppet-pool-int-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [are deftest is testing use-fixtures]]
             [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.tools.logging :as log]
@@ -11,14 +11,13 @@
             [puppetlabs.kitchensink.testutils :as ks-testutils]
             [puppetlabs.puppetserver.bootstrap-testutils :as bootstrap]
             [puppetlabs.puppetserver.testutils :as testutils :refer
-             [ca-cert localhost-cert localhost-key ssl-request-options]]
+             [ssl-request-options]]
             [puppetlabs.services.config.puppet-server-config-service :as ps-config]
             [puppetlabs.services.jruby.jruby-metrics-service :as jruby-metrics-service]
             [puppetlabs.services.jruby.jruby-puppet-core :as jruby-puppet-core]
             [puppetlabs.services.jruby.jruby-puppet-testutils :as jruby-testutils]
             [puppetlabs.services.jruby-pool-manager.impl.jruby-agents :as jruby-agents]
             [puppetlabs.services.jruby-pool-manager.jruby-core :as jruby-core]
-            [puppetlabs.services.jruby-pool-manager.jruby-schemas :as jruby-schemas]
             [puppetlabs.services.protocols.jruby-puppet :as jruby-protocol]
             [puppetlabs.services.protocols.request-handler :as handler]
             [puppetlabs.services.request-handler.request-handler-core :as handler-core]
@@ -31,14 +30,12 @@
             [puppetlabs.trapperkeeper.internal :as tk-internal]
             [puppetlabs.trapperkeeper.services :as tk-services]
             [puppetlabs.trapperkeeper.services.protocols.metrics :as metrics-protocol]
-            [puppetlabs.trapperkeeper.services.webserver.jetty9-service :as jetty9]
             [puppetlabs.trapperkeeper.testutils.bootstrap :as tk-testutils]
             [puppetlabs.trapperkeeper.testutils.logging :as logutils])
   (:import (com.codahale.metrics MetricRegistry)
            (java.io ByteArrayOutputStream)
            (org.jruby RubyInstanceConfig$CompileMode RubyInstanceConfig$ProfilingMode)
-           (org.jruby.embed EvalFailedException)
-           (org.jruby.runtime Constants)))
+           (org.jruby.embed EvalFailedException)))
 
 (def test-resources-dir
   "./dev-resources/puppetlabs/services/jruby/jruby_pool_int_test")
@@ -102,7 +99,7 @@
   [pool-context]
   (let [flush-complete (promise)]
     (add-watch (get-in pool-context [:internal :modify-instance-agent]) :flush-callback
-               (fn [k a old-state new-state]
+               (fn [k a _old-state _new-state]
                  (when (= k :flush-callback)
                    (remove-watch a :flush-callback)
                    (deliver flush-complete true))))
@@ -162,7 +159,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Tests
 
-(deftest ^:integration ^:single-threaded-only admin-api-flush-jruby-pool-test
+(deftest ^:integration ^:single-threaded-only admin-api-flush-jruby-pool-single-threaded-test
   (testing "Flushing the instance pool results in all new JRuby instances"
     (bootstrap/with-puppetserver-running
       app
@@ -183,13 +180,14 @@
         (is (true? (verify-no-constants pool-context 4)))))))
 
 ;; Copies the test above, but for multithreaded mode (single jruby instance)
-(deftest ^:integration ^:multithreaded-only admin-api-flush-jruby-ref-pool-test
+(deftest ^:integration ^:multithreaded-only admin-api-flush-jruby-ref-pool-multi-threaded-test
   (testing "Flushing the reference pool results in a new JRuby instance"
     (bootstrap/with-puppetserver-running
       app
       {:jruby-puppet {:gem-path gem-path
                       :max-active-instances 4
-                      :borrow-timeout default-borrow-timeout}}
+                      :borrow-timeout default-borrow-timeout
+                      :multithreaded true}}
       (let [jruby-service (tk-app/get-service app :JRubyPuppetService)
             context (tk-services/service-context jruby-service)
             pool-context (:pool-context context)]
@@ -475,8 +473,7 @@
                    (is (= [] (:url-and-method metrics-data)))))
                (testing "POST request"
                  (.runScriptlet container (format "$c.post(URI('%s'), 'body')" url))
-                 (let [metrics-data (metrics/get-client-metrics-data metric-registry)
-                       url-metrics-data (:url metrics-data)]
+                 (let [metrics-data (metrics/get-client-metrics-data metric-registry)]
                    (is (= [] (:url metrics-data)))
                    (is (= [] (:url-and-method metrics-data)))))
                (testing "no metric-id metrics are registered"
@@ -640,7 +637,7 @@
              script "require 'timeout'; Timeout::timeout(0.1) { sleep(5) }"]
          (try
            (.runScriptlet scripting-container script)
-           (catch EvalFailedException e))
+           (catch EvalFailedException _))
          (let [threads-during-jruby (set (keys (Thread/getAllStackTraces)))]
            (jruby-testutils/return-instance jruby-service instance :test)
            (jruby-protocol/flush-jruby-pool! jruby-service)

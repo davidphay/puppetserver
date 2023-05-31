@@ -7,7 +7,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: puppetlabs.puppetserver \n"
-"X-Git-Ref: a06ca1846201da2bef1f728cb0905b17855086e4\n"
+"X-Git-Ref: 4dc7b77e0db804b7a046682903df2660ec1b9304\n"
 "Report-Msgid-Bugs-To: docs@puppet.com\n"
 "POT-Creation-Date: \n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -20,6 +20,12 @@ msgstr ""
 "Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid ""
+"Detected ca-ttl setting in CA config which will take precedence over puppet."
+"conf setting"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "Cannot initialize {0} with partial state; need all files or none."
 msgstr ""
 
@@ -29,6 +35,26 @@ msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "Missing:"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Begin append to inventory file."
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Inventory file not found.  Assume empty."
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Error while appending to inventory file."
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Finish append to inventory file. "
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Append \"{1}\" to inventory file {0}"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
@@ -69,7 +95,20 @@ msgid "Initializing SSL for the CA; settings:"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Checking \"{0}\" for validity"
+msgstr ""
+
+#. see https://github.com/puppetlabs/clj-i18n/blob/main/README.md#single-quotes-in-messages for reasoning with double quote
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Rejecting subject \"{0}\" because it doesn''t match hostname \"{1}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "Instance name \"{0}\" does not match requested key \"{1}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Rejecting subject \"{0}\" because all characters must be lowercase"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
@@ -81,7 +120,19 @@ msgid "Subject contains a wildcard, which is not allowed: {0}"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Rejecting subject \"{0}\" as it ends with an invalid character"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "Subject hostname format is invalid"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Rejecting subject \"{0}\" as it starts with an invalid character"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Rejecting subject \"{0}\" because it contains invalid characters"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
@@ -178,8 +229,14 @@ msgid ""
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
-msgid "Signed certificate request for {0}"
+msgid "Autosign executable failed. Result: {0} "
 msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Entity {1} {2} 1 certificate: {3}."
+msgid_plural "Entity {1} {2} {0} certificates: {3}."
+msgstr[0] ""
+msgstr[1] ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "Saving CSR to ''{0}''"
@@ -296,12 +353,6 @@ msgid "No revoke action needed. The certs are already in the CRL."
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
-msgid "Revoked 1 certificate: {1}"
-msgid_plural "Revoked {0} certificates: {1}"
-msgstr[0] ""
-msgstr[1] ""
-
-#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "No revoke action needed. The infra certs are already in the infra CRL"
 msgstr ""
 
@@ -319,6 +370,10 @@ msgid ""
 "will not be loaded"
 msgstr ""
 
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Renewed certificate for \"{0}\" with new expiration of \"{1}\""
+msgstr ""
+
 #: src/clj/puppetlabs/puppetserver/cli/subcommand.clj
 msgid ""
 "Path to a configuration file or directory of configuration files. See the "
@@ -333,6 +388,66 @@ msgstr ""
 msgid ""
 "Invalid code-id ''{0}''. Must contain only alpha-numerics and ''-'', ''_'', "
 "'';'', or '':''"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Attempt to acquire read lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Acquired read lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Released read lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Read Lock acquisition timed out \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Failed to acquire read lock \"{0}\" within {1} seconds"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Attempt to acquire write lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Acquired write lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Released write lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Write Lock acquisition timed out \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Failed to acquire write lock \"{0}\" within {1} seconds"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Attempt to acquire lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Acquired lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Released lock \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Lock acquisition timed out \"{0}\""
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/common.clj
+msgid "Failed to acquire lock \"{0}\" within {1} seconds"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/jruby_request.clj
@@ -359,6 +474,10 @@ msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/ringutils.clj
 msgid "Access to {0} rejected; no client certificate found"
+msgstr ""
+
+#: src/clj/puppetlabs/services/analytics/analytics_service.clj
+msgid "Failed to check for product updates"
 msgstr ""
 
 #: src/clj/puppetlabs/services/analytics/analytics_service.clj
@@ -389,6 +508,18 @@ msgstr ""
 
 #: src/clj/puppetlabs/services/ca/certificate_authority_core.clj
 msgid "No valid CRLs submitted, nothing will be updated."
+msgstr ""
+
+#: src/clj/puppetlabs/services/ca/certificate_authority_core.clj
+msgid "Certificate present, processing renewal request"
+msgstr ""
+
+#: src/clj/puppetlabs/services/ca/certificate_authority_core.clj
+msgid "Certificate present, but does not match signature"
+msgstr ""
+
+#: src/clj/puppetlabs/services/ca/certificate_authority_core.clj
+msgid "No certificate found in renewal request"
 msgstr ""
 
 #: src/clj/puppetlabs/services/ca/certificate_authority_core.clj
@@ -439,6 +570,10 @@ msgstr ""
 
 #: src/clj/puppetlabs/services/ca/certificate_authority_disabled_service.clj
 msgid "CA disabled; ignoring retrieval of CA CRL"
+msgstr ""
+
+#: src/clj/puppetlabs/services/ca/certificate_authority_service.clj
+msgid "Reporting CA event failed with: {0}nPayload: {1}"
 msgstr ""
 
 #: src/clj/puppetlabs/services/ca/certificate_authority_service.clj

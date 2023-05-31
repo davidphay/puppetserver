@@ -1,29 +1,31 @@
 (ns puppetlabs.services.ca.certificate-authority-core
-  (:import [java.io InputStream ByteArrayInputStream]
-           (clojure.lang IFn)
-           (org.joda.time DateTime))
-  (:require [puppetlabs.puppetserver.certificate-authority :as ca]
+  (:require [bidi.schema :as bidi-schema]
+            [cheshire.core :as cheshire]
+            [clj-time.core :as time]
+            [clj-time.format :as time-format]
+            [clojure.java.io :as io]
+            [clojure.string :as string]
+            [clojure.tools.logging :as log]
+            [liberator.core :refer [defresource]]
+            [liberator.representation :as representation]
+            [puppetlabs.comidi :as comidi :refer [ANY DELETE GET POST PUT]]
+            [puppetlabs.i18n.core :as i18n]
+            [puppetlabs.puppetserver.certificate-authority :as ca]
+            [puppetlabs.puppetserver.common :as common]
+            [puppetlabs.puppetserver.liberator-utils :as liberator-utils]
             [puppetlabs.puppetserver.ringutils :as ringutils]
             [puppetlabs.ring-middleware.core :as middleware]
             [puppetlabs.ring-middleware.utils :as middleware-utils]
-            [puppetlabs.puppetserver.liberator-utils :as liberator-utils]
-            [puppetlabs.comidi :as comidi :refer [GET ANY PUT DELETE]]
-            [bidi.schema :as bidi-schema]
-            [slingshot.slingshot :as sling]
-            [clojure.tools.logging :as log]
-            [clojure.java.io :as io]
-            [clojure.string :as string]
-            [clj-time.core :as time]
-            [clj-time.format :as time-format]
-            [schema.core :as schema]
-            [cheshire.core :as cheshire]
-            [liberator.core :refer [defresource]]
-            [liberator.representation :as representation]
+            [puppetlabs.ssl-utils.core :as utils]
+            [puppetlabs.trapperkeeper.authorization.ring-middleware :as auth-middleware]
+            [puppetlabs.trapperkeeper.services.status.status-core :as status-core]
             [ring.util.request :as request]
             [ring.util.response :as rr]
-            [puppetlabs.trapperkeeper.services.status.status-core :as status-core]
-            [puppetlabs.i18n.core :as i18n]
-            [puppetlabs.ssl-utils.core :as utils]))
+            [schema.core :as schema]
+            [slingshot.slingshot :as sling])
+  (:import (clojure.lang IFn)
+           (java.io ByteArrayInputStream InputStream StringWriter)
+           (org.joda.time DateTime)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Constants
@@ -34,14 +36,30 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; 'handler' functions for HTTP endpoints
 
-;; Perhaps this could/should be in the tk context somewhere, and of
-;; course it'll need to be used to guard any competing writes.
-(def crl-write-serializer (Object.))
+
+(schema/defn format-http-date :- (schema/maybe DateTime)
+  "Formats an http-date into joda time.  Returns nil for malformed or nil
+   http-dates"
+  [http-date :- (schema/maybe schema/Str)]
+  (when http-date
+    (try
+      (time-format/parse
+        (time-format/formatters :rfc822)
+        (string/replace http-date #"GMT" "+0000"))
+      (catch IllegalArgumentException _
+        nil))))
 
 (defn handle-get-certificate
-  [subject {:keys [cacert signeddir]}]
-  (-> (if-let [certificate (ca/get-certificate subject cacert signeddir)]
-        (rr/response certificate)
+  [subject {:keys [cacert signeddir]} request]
+  (-> (if-let [certificate-path (ca/get-certificate-path subject cacert signeddir)]
+        (let [last-modified-val (rr/get-header request "If-Modified-Since")
+              last-modified-date-time (format-http-date last-modified-val)
+              cert-last-modified-date-time (ca/get-file-last-modified certificate-path)]
+          (if (or (nil? last-modified-date-time)
+                  (time/after? cert-last-modified-date-time last-modified-date-time))
+            (rr/response (slurp certificate-path))
+            (-> (rr/response nil)
+                (rr/status 304))))
         (rr/not-found (i18n/tru "Could not find certificate {0}" subject)))
       (rr/content-type "text/plain")))
 
@@ -53,71 +71,68 @@
       (rr/content-type "text/plain")))
 
 (schema/defn handle-put-certificate-request!
-  [subject :- String
-   certificate-request :- InputStream
-   ca-settings :- ca/CaSettings]
+  [ca-settings :- ca/CaSettings
+   report-activity
+   {:keys [body] {:keys [subject]} :route-params :as request}]
   (sling/try+
-    (ca/process-csr-submission! subject certificate-request ca-settings)
-    (rr/content-type (rr/response nil) "text/plain")
+    (let [report-activity-fn (ca/create-report-activity-fn report-activity request)]
+      (ca/process-csr-submission! subject body ca-settings report-activity-fn)
+      (rr/content-type (rr/response nil) "text/plain"))
     (catch ca/csr-validation-failure? {:keys [msg]}
       (log/error msg)
       ;; Respond to all CSR validation failures with a 400
       (middleware-utils/plain-response 400 msg))))
 
-(schema/defn format-http-date :- (schema/maybe DateTime)
-  "Formats an http-date into joda time.  Returns nil for malformed or nil
-   http-dates"
-  [http-date :- (schema/maybe schema/Str)]
-  (when http-date
-    (try
-      (time-format/parse
-        (time-format/formatters :rfc822)
-        (string/replace http-date #"GMT" "+0000"))
-      (catch IllegalArgumentException e
-        nil))))
+
+(schema/defn resolve-crl-information
+  "Create a map that has the appropriate path, lock, timeout and descriptor for the crl being used"
+  [{:keys [enable-infra-crl cacrl infra-crl-path crl-lock crl-lock-timeout-seconds]} :- ca/CaSettings]
+  {:path (if (true? enable-infra-crl) infra-crl-path cacrl)
+   :lock crl-lock
+   :descriptor ca/crl-lock-descriptor
+   :timeout crl-lock-timeout-seconds})
 
 (defn handle-get-certificate-revocation-list
   "Always return the crl if no 'If-Modified-Since' header is provided or
   if that header is not in correct http-date format. If the header is
-  present and has correct format, only return the crl if the master
+  present and has correct format, only return the crl if the server
   cacrl is newer than the agent crl."
-  [request {:keys [cacrl infra-crl-path enable-infra-crl]}]
+  [request ca-settings]
   (let [agent-crl-last-modified-val (rr/get-header request "If-Modified-Since")
         agent-crl-last-modified-date-time (format-http-date agent-crl-last-modified-val)
-        master-crl-to-use (if (true? enable-infra-crl) infra-crl-path cacrl)
-        master-crl-last-modified-date-time (ca/get-crl-last-modified master-crl-to-use)]
-    (if (or (nil? agent-crl-last-modified-date-time)
-            (time/after? master-crl-last-modified-date-time agent-crl-last-modified-date-time))
-      (-> (ca/get-certificate-revocation-list master-crl-to-use)
-          (rr/response)
-          (rr/content-type "text/plain"))
-      (-> (rr/response nil)
-          (rr/status 304)
-          (rr/content-type "text/plain")))))
+        {:keys [path lock descriptor timeout]} (resolve-crl-information ca-settings)]
+    ;; Since the locks are reentrant, obtain the read lock to prevent modification during the
+    ;; window of time between when the last-modified is read and when the crl content is potentially read.
+    (common/with-safe-read-lock lock descriptor timeout
+        (if (or (nil? agent-crl-last-modified-date-time)
+                (time/after? (ca/get-file-last-modified path lock descriptor timeout)
+                             agent-crl-last-modified-date-time))
+          (-> (ca/get-certificate-revocation-list path lock descriptor timeout)
+              (rr/response)
+              (rr/content-type "text/plain"))
+          (-> (rr/response nil)
+              (rr/status 304)
+              (rr/content-type "text/plain"))))))
 
 (schema/defn handle-put-certificate-revocation-list!
   [incoming-crl-pem :- InputStream
-   {:keys [cacrl cacert enable-infra-crl infra-crl-path]} :- ca/CaSettings]
-  (locking crl-write-serializer
-    (try
-      (let [byte-stream (-> incoming-crl-pem
-                            ca/input-stream->byte-array
-                            ByteArrayInputStream.)
-            incoming-crls (utils/pem->crls byte-stream)]
-        (if (empty? incoming-crls)
-          (do
-            (log/info (i18n/trs "No valid CRLs submitted, nothing will be updated."))
-            (middleware-utils/plain-response 400 "No valid CRLs submitted."))
-
-          (do
-            (ca/update-crls incoming-crls cacrl cacert)
-            (when enable-infra-crl
-              (ca/update-crls incoming-crls infra-crl-path cacert))
-            (middleware-utils/plain-response 200 "Successfully updated CRLs."))))
-      (catch IllegalArgumentException e
-        (let [error-msg (.getMessage e)]
-          (log/error error-msg)
-          (middleware-utils/plain-response 400 error-msg))))))
+   {:keys [cacrl cacert] :as ca-settings} :- ca/CaSettings]
+  (try
+    (let [byte-stream (-> incoming-crl-pem
+                          ca/input-stream->byte-array
+                          ByteArrayInputStream.)
+          incoming-crls (utils/pem->crls byte-stream)]
+      (if (empty? incoming-crls)
+        (do
+          (log/info (i18n/trs "No valid CRLs submitted, nothing will be updated."))
+          (middleware-utils/plain-response 400 "No valid CRLs submitted."))
+        (do
+          (ca/update-crls! incoming-crls cacrl cacert ca-settings)
+          (middleware-utils/plain-response 200 "Successfully updated CRLs."))))
+    (catch IllegalArgumentException e
+      (let [error-msg (.getMessage e)]
+        (log/error error-msg)
+        (middleware-utils/plain-response 400 error-msg)))))
 
 (schema/defn handle-delete-certificate-request!
   [subject :- String
@@ -144,9 +159,10 @@
       (log/debug e))))
 
 (schema/defn handle-cert-clean
-  [{:keys [body]}
-   ca-settings :- ca/CaSettings]
-  (if-let [json-body (try-to-parse body)]
+  [request
+   ca-settings :- ca/CaSettings
+   report-activity]
+  (if-let [json-body (try-to-parse (:body request))]
     ;; TODO support async mode
     (if (true? (:async json-body))
       (-> (rr/response "Async mode is not currently supported.")
@@ -159,9 +175,10 @@
                                      certnames)
               message (when (seq missing-certs)
                         (format "The following certs do not exist and cannot be revoked: %s"
-                                (vec missing-certs)))]
+                                (vec missing-certs)))
+              report-activity-fn (ca/create-report-activity-fn report-activity request)]
           (try
-            (ca/revoke-existing-certs! ca-settings existing-certs)
+            (ca/revoke-existing-certs! ca-settings existing-certs report-activity-fn)
             (ca/delete-certificates! ca-settings existing-certs)
             (-> (rr/response (or message "Successfully cleaned all certs."))
                 (rr/status 200)
@@ -175,6 +192,42 @@
             (rr/content-type "text/plain"))))
     (-> (rr/response "Request body is not JSON.")
         (rr/status 400)
+        (rr/content-type "text/plain"))))
+
+(schema/defn ^:always-validate
+  handle-cert-renewal
+  "Given a request and the CA settings, if there is a cert present in the request
+  (either in the ssl-client-cert property of the request, or as an x-client-cert
+  field in the header when allow-header-cert-info is set to true) and the cert in
+  the request is valid and signed by the this CA. then generate a renewed cert and
+  return it in the response body"
+  [request
+   {:keys [cacert cakey allow-auto-renewal allow-header-cert-info] :as ca-settings} :- ca/CaSettings
+   report-activity]
+  (if allow-auto-renewal
+    (let [request-cert (auth-middleware/request->cert request allow-header-cert-info)]
+      (if request-cert
+        (let [signing-cert (utils/pem->ca-cert cacert cakey)]
+          (if (ca/cert-authority-id-match-ca-subject-id? request-cert signing-cert)
+            (do
+              (log/info (i18n/trs "Certificate present, processing renewal request"))
+              (let [cert-signing-result (ca/renew-certificate! request-cert ca-settings report-activity)
+                    cert-writer (StringWriter.)]
+                ;; has side effect of writing to the writer
+                (utils/cert->pem! cert-signing-result cert-writer)
+                (-> (rr/response (.toString cert-writer))
+                    (rr/content-type "text/plain"))))
+            (do
+              (log/info (i18n/trs "Certificate present, but does not match signature"))
+              (-> (rr/response (i18n/tru "Certificate present, but does not match signature"))
+                  (rr/status 403)
+                  (rr/content-type "text/plain")))))
+        (do
+          (log/info (i18n/trs "No certificate found in renewal request"))
+          (-> (rr/bad-request (i18n/tru "No certificate found in renewal request"))
+              (rr/content-type "text/plain")))))
+    (-> (rr/response "Not Found")
+        (rr/status 404)
         (rr/content-type "text/plain"))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -263,7 +316,7 @@
     (representation/ring-response)))
 
 (defresource certificate-status
-  [subject settings]
+  [subject settings report-activity]
   :allowed-methods [:get :put :delete]
 
   :available-media-types media-types
@@ -290,12 +343,12 @@
           (conflict error-message))))))
 
   :delete!
-  (fn [context]
+  (fn [_context]
     (ca/delete-certificate! settings subject)
     (ca/delete-certificate-request! settings subject))
 
   :exists?
-  (fn [context]
+  (fn [_context]
     (or
      (ca/certificate-exists? settings subject)
      (ca/csr-exists? settings subject)))
@@ -366,12 +419,14 @@
 
   :put!
   (fn [context]
-     (let [desired-state (get-desired-state context)]
-       (locking crl-write-serializer
-         (ca/set-certificate-status!
-          (merge-request-settings settings context)
-          subject
-          desired-state))
+     (let [desired-state (get-desired-state context)
+           request (:request context)
+           report-activity-fn (ca/create-report-activity-fn report-activity request)]
+       (ca/set-certificate-status!
+         (merge-request-settings settings context)
+         subject
+         desired-state
+         report-activity-fn)
        (-> context
          (assoc-in [:representation :media-type] "text/plain")))))
 
@@ -395,32 +450,35 @@
         (as-json-or-pson context)))))
 
 (schema/defn ^:always-validate web-routes :- bidi-schema/RoutePair
-  [ca-settings :- ca/CaSettings]
+  [ca-settings :- ca/CaSettings
+   report-activity]
   (comidi/routes
     (comidi/context ["/v1"]
       (ANY ["/certificate_status/" :subject] [subject]
-        (certificate-status subject ca-settings))
+          (certificate-status subject ca-settings report-activity))
       (comidi/context ["/certificate_statuses/"]
         (ANY [[#"[^/]+" :ignored-but-required]] request
           (certificate-statuses request ca-settings))
         (ANY [""] [] (middleware-utils/plain-response 400 "Missing URL Segment")))
-      (GET ["/certificate/" :subject] [subject]
-        (handle-get-certificate subject ca-settings))
+      (GET ["/certificate/" :subject] request
+        (handle-get-certificate (get-in request [:params :subject]) ca-settings request))
       (comidi/context ["/certificate_request/" :subject]
         (GET [""] [subject]
           (handle-get-certificate-request subject ca-settings))
-        (PUT [""] [subject :as {body :body}]
-          (handle-put-certificate-request! subject body ca-settings))
+        (PUT [""] request
+          (handle-put-certificate-request! ca-settings report-activity request))
         (DELETE [""] [subject]
           (handle-delete-certificate-request! subject ca-settings)))
       (GET ["/certificate_revocation_list/" :ignored-node-name] request
         (handle-get-certificate-revocation-list request ca-settings))
       (PUT ["/certificate_revocation_list"] request
         (handle-put-certificate-revocation-list! (:body request) ca-settings))
-      (GET ["/expirations"] request
+      (GET ["/expirations"] _request
         (handle-get-ca-expirations ca-settings))
       (PUT ["/clean"] request
-        (handle-cert-clean request ca-settings)))
+        (handle-cert-clean request ca-settings report-activity))
+      (POST ["/certificate_renewal"] request
+        (handle-cert-renewal request ca-settings report-activity)))
     (comidi/not-found "Not Found")))
 
 (schema/defn ^:always-validate
@@ -448,7 +506,7 @@
   ;; and replace with a line chaining the handler into a call to
   ;; 'authorization-fn'.
   (let [whitelist-path (str path
-                            (if (not= \/ (last path)) "/")
+                            (when (not= \/ (last path)) "/")
                             puppet-ca-API-version
                             "/certificate_status")]
     (-> route-handler
@@ -463,6 +521,6 @@
 ;;; Public
 
 (schema/defn ^:always-validate v1-status :- status-core/StatusCallbackResponse
-  [level :- status-core/ServiceStatusDetailLevel]
+  [_level :- status-core/ServiceStatusDetailLevel]
   {:state :running
    :status {}})

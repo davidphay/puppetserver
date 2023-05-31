@@ -1,4 +1,4 @@
-(def ps-version "7.9.5-SNAPSHOT")
+(def ps-version "8.0.1-SNAPSHOT")
 
 (defn deploy-info
   [url]
@@ -27,7 +27,7 @@
 
   :min-lein-version "2.9.1"
 
-  :parent-project {:coords [puppetlabs/clj-parent "5.2.16"]
+  :parent-project {:coords [puppetlabs/clj-parent "6.0.0"]
                    :inherit [:managed-dependencies]}
 
   :dependencies [[org.clojure/clojure]
@@ -67,7 +67,8 @@
                  [puppetlabs/dujour-version-check]
                  [puppetlabs/http-client]
                  [puppetlabs/comidi]
-                 [puppetlabs/i18n]]
+                 [puppetlabs/i18n]
+                 [puppetlabs/rbac-client]]
 
   :main puppetlabs.trapperkeeper.main
 
@@ -83,6 +84,7 @@
                  ["snapshots" "https://artifactory.delivery.puppetlabs.net/artifactory/clojure-snapshots__local/"]]
 
   :plugins [[lein-parent "0.3.7"]
+            [jonase/eastwood "1.2.2" :exclusions [org.clojure/clojure]]
             ;; We have to have this, and it needs to agree with clj-parent
             ;; until/unless you can have managed plugin dependencies.
             [puppetlabs/i18n "0.9.2" :hooks false]]
@@ -92,11 +94,12 @@
                        :group "puppet"
                        :numeric-uid-gid 52
                        :build-type "foss"
+                       :puppet-platform-version 8
                        :java-args ~(str "-Xms2g -Xmx2g "
                                      "-Djruby.logger.class=com.puppetlabs.jruby_utils.jruby.Slf4jLogger")
                        :create-dirs ["/opt/puppetlabs/server/data/puppetserver/jars"]
-                       :repo-target "puppet7"
-                       :nonfinal-repo-target "puppet7-nightly"
+                       :repo-target "puppet8"
+                       :nonfinal-repo-target "puppet8-nightly"
                        :bootstrap-source :services-d
                        :logrotate-enabled false}
                 :resources {:dir "tmp/ezbake-resources"}
@@ -121,7 +124,8 @@
                                         [ring-basic-authentication]
                                         [ring/ring-mock]
                                         [beckon]
-                                        [lambdaisland/uri "1.4.70"]]}
+                                        [lambdaisland/uri "1.4.70"]
+                                        [puppetlabs/rbac-client :classifier "test" :scope "test"]]}
              :dev [:defaults
                    {:dependencies [[org.bouncycastle/bcpkix-jdk18on]]}]
              :fips [:defaults
@@ -168,7 +172,7 @@
                                                [puppetlabs/jruby-utils]
                                                [puppetlabs/puppetserver ~ps-version]
                                                [puppetlabs/trapperkeeper-webserver-jetty9]]
-                      :plugins [[puppetlabs/lein-ezbake "2.3.2"]]
+                      :plugins [[puppetlabs/lein-ezbake "2.4.1"]]
                       :name "puppetserver"}
              :uberjar {:dependencies [[org.bouncycastle/bcpkix-jdk18on]
                                       [puppetlabs/trapperkeeper-webserver-jetty9]]
@@ -231,6 +235,11 @@
                    :unit (complement :integration)
                    :multithreaded (complement :single-threaded-only)
                    :singlethreaded (complement :multithreaded-only)}
+
+  :eastwood {:exclude-linters [:unused-meta-on-macro
+                               :reflection
+                               [:suspicious-test :second-arg-is-not-string]]
+             :continue-on-exception true}
 
   :aliases {"gem" ["trampoline" "run" "-m" "puppetlabs.puppetserver.cli.gem" "--config" "./dev/puppetserver.conf" "--"]
             "ruby" ["trampoline" "run" "-m" "puppetlabs.puppetserver.cli.ruby" "--config" "./dev/puppetserver.conf" "--"]
