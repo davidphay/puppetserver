@@ -164,6 +164,93 @@
                  (is (logged? #"Payload.*commit" :error))
                  (is (logged? #"Entity localhost revoked 1 certificate.*" :info)))))))))))
 
+(deftest new-cert-signing-respects-agent-renewal-support-indication
+  (testutils/with-config-dirs
+    {(str test-resources-dir "/infracrl_test/master/conf/ssl") (str bootstrap/server-conf-dir "/ssl")
+     (str test-resources-dir "/infracrl_test/master/conf/ca") (str bootstrap/server-conf-dir "/ca")}
+    (let [cert-path (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
+          key-path (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
+          ca-cert-path (str bootstrap/server-conf-dir "/ca/ca_crt.pem")]
+      (testing "with a puppetserver configured for auto-renewal"
+        (testutils/with-stub-puppet-conf
+          (bootstrap/with-puppetserver-running
+            app
+            {:certificate-authority { :allow-auto-renewal true}
+             :jruby-puppet
+             {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
+             :webserver
+             {:ssl-cert (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
+              :ssl-key (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
+              :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+              :ssl-crl-path (str bootstrap/server-conf-dir "/ssl/crl.pem")}}
+            (testing "signs a cert with a short ttl when the capability indicator is present"
+              (let [certname (ks/rand-str :alpha-lower 8)
+                    csr (ssl-utils/generate-certificate-request
+                          (ssl-utils/generate-key-pair)
+                          (ssl-utils/cn certname)
+                          []
+                          [{:oid "1.3.6.1.4.1.34380.1.3.2" :value true}])
+                    csr-path (ks/temp-file "test_csr.pem")
+                    signed-cert-path (str bootstrap/server-conf-dir "/ca/signed/" certname ".pem")
+                    status-url (str "https://localhost:8140/puppet-ca/v1/certificate_status/" certname)
+                    url (str "https://localhost:8140/puppet-ca/v1/certificate_request/" certname)
+                    request-opts {:ssl-cert cert-path
+                                  :ssl-key key-path
+                                  :ssl-ca-cert ca-cert-path}]
+
+                  (ssl-utils/obj->pem! csr csr-path)
+                  (testing "submit a CSR via the API"
+                    (let [response (http-client/put
+                                     url
+                                     (merge request-opts {:body (slurp csr-path)
+                                                          :headers {"x-puppet-version" "8.2.0"}}))]
+                      (is (= 200 (:status response)))))
+                  (testing "Sign the waiting CSR"
+                    (let [response (http-client/put
+                                     status-url
+                                     (merge request-opts
+                                            {:body "{\"desired_state\": \"signed\"}"
+                                             :headers {"content-type" "application/json"}}))]
+                        (is (= 204 (:status response)))
+                        (is (fs/exists? signed-cert-path))
+                        (let [signed-cert (ssl-utils/pem->cert signed-cert-path)]
+                          (testing "new not-after should be 89 days (and some fraction) away"
+                            (let [diff (- (.getTime (.getNotAfter signed-cert)) (.getTime (Date.)))
+                                  days (.convert TimeUnit/DAYS diff TimeUnit/MILLISECONDS)]
+                              (is (= 89 days)))))))))
+            (testing "signs a cert with a long ttl when the capability indicator is not present"
+              (let [certname (ks/rand-str :alpha-lower 8)
+                    csr (ssl-utils/generate-certificate-request
+                          (ssl-utils/generate-key-pair)
+                          (ssl-utils/cn certname))
+                    csr-path (ks/temp-file "test_csr.pem")
+                    signed-cert-path (str bootstrap/server-conf-dir "/ca/signed/" certname ".pem")
+                    status-url (str "https://localhost:8140/puppet-ca/v1/certificate_status/" certname)
+                    url (str "https://localhost:8140/puppet-ca/v1/certificate_request/" certname)
+                    request-opts {:ssl-cert cert-path
+                                  :ssl-key key-path
+                                  :ssl-ca-cert ca-cert-path}]
+
+                (ssl-utils/obj->pem! csr csr-path)
+                (testing "submit a CSR via the API"
+                  (let [response (http-client/put
+                                   url
+                                   (merge request-opts {:body (slurp csr-path)
+                                                        :headers {"x-puppet-version" "7.1.8"}}))]
+                    (is (= 200 (:status response)))))
+                (testing "Sign the waiting CSR"
+                  (let [response (http-client/put
+                                   status-url
+                                   (merge request-opts
+                                          {:body "{\"desired_state\": \"signed\"}"
+                                           :headers {"content-type" "application/json"}}))]
+                    (is (= 204 (:status response)))
+                    (is (fs/exists? signed-cert-path))
+                    (let [signed-cert (ssl-utils/pem->cert signed-cert-path)]
+                      (testing "new not-after should be 5 years (and some fraction) away"
+                        (let [diff (- (.getTime (.getNotAfter signed-cert)) (.getTime (Date.)))
+                              days (.convert TimeUnit/DAYS diff TimeUnit/MILLISECONDS)]
+                          (is (= (- (* 365 5) 1) days)))))))))))))))
 (deftest ^:integration cert-on-whitelist-test
   (testing "requests made when cert is on whitelist"
     (logutils/with-test-logging
@@ -608,8 +695,8 @@
                  ;; If the revocation was successful infra CRL should contain above revoked compiler's cert
                  (is (= 200 (:status revoke-response)))
                  (is (ssl-utils/revoked? (ssl-utils/pem->ca-crl
-                                      (str bootstrap/server-conf-dir "/ca/infra_crl.pem")
-                                      ca-cert)
+                                         (str bootstrap/server-conf-dir "/ca/infra_crl.pem")
+                                         ca-cert)
                                      cert1))
                  (is (ssl-utils/revoked? (ssl-utils/pem->ca-crl
                                       (str bootstrap/server-conf-dir "/ca/infra_crl.pem")
@@ -774,13 +861,51 @@
            (is (not (fs/exists? saved-csr)))))
        (fs/delete csr-file)))))
 
+(deftest csr-api-puppet-version-test
+  (testutils/with-stub-puppet-conf
+    (bootstrap/with-puppetserver-running-with-config
+      app
+      (bootstrap/load-dev-config-with-overrides
+        {:jruby-puppet
+         {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
+         :webserver
+         {:ssl-cert (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
+          :ssl-key (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
+          :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+          :ssl-crl-path (str bootstrap/server-conf-dir "/ssl/crl.pem")}})
+      (let [request-dir (str bootstrap/server-conf-dir "/ca/requests")
+            key-pair (ssl-utils/generate-key-pair)
+            subjectDN (ssl-utils/cn "test_version_cert")
+            csr (ssl-utils/generate-certificate-request key-pair subjectDN)
+            csr-file (ks/temp-file "test_version_csr.pem")
+            saved-csr (str request-dir "/test_version_cert.pem")
+            url "https://localhost:8140/puppet-ca/v1/certificate_request/test_version_cert"
+            request-opts {:ssl-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+                          :ssl-key (str bootstrap/server-conf-dir "/ca/ca_key.pem")
+                          :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+                          :as :text
+                          :headers {"content-type" "text/plain"
+                                    "x-puppet-version" "8.2.0"}}]
+        (ssl-utils/obj->pem! csr csr-file)
+        (testing "submit a CSR via the API"
+          (let [response (http-client/put
+                           url
+                           (merge request-opts {:body (slurp csr-file)}))]
+            (is (= 200 (:status response)))
+            (fs/delete csr-file)))
+        (testing "delete a CSR via the API"
+          (let [response (http-client/delete
+                           url
+                           request-opts)]
+            (is (= 204 (:status response)))
+            (is (not (fs/exists? saved-csr)))))))))
+
 (deftest csr-activity-service-cert
   (let [reported-activity (atom [])
-        test-service (tk-services/service
-                  act-proto/ActivityReportingService
-                  []
-                  (report-activity! [_this body]
-                    (swap! reported-activity conj body)))
+        test-service (tk-services/service act-proto/ActivityReportingService
+                       []
+                       (report-activity! [_this body]
+                         (swap! reported-activity conj body)))
         cert-path (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
         key-path (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
         ca-cert-path (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
@@ -791,13 +916,13 @@
           app
           (concat (bootstrap/services-from-dev-bootstrap) [test-service])
           (bootstrap/load-dev-config-with-overrides
-          {:jruby-puppet
-            {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
-           :webserver
-            {:ssl-cert cert-path
-             :ssl-key key-path
-             :ssl-ca-cert ca-cert-path
-             :ssl-crl-path crl-path}})
+            {:jruby-puppet
+              {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
+             :webserver
+              {:ssl-cert cert-path
+               :ssl-key key-path
+               :ssl-ca-cert ca-cert-path
+               :ssl-crl-path crl-path}})
           (let [certname "test_cert"
                 csr (ssl-utils/generate-certificate-request
                      (ssl-utils/generate-key-pair)
@@ -841,44 +966,46 @@
             (fs/delete csr-path))))))
 
 (deftest csr-activity-service-token
+  (testutils/with-config-dirs
+    {(str test-resources-dir "/infracrl_test/master/conf/ssl") (str bootstrap/server-conf-dir "/ssl")
+     (str test-resources-dir "/infracrl_test/master/conf/ca") (str bootstrap/server-conf-dir "/ca")}
+    (let [reported-activity (atom [])
+          test-service (tk-services/service
+                         act-proto/ActivityReportingService
+                         []
+                         (report-activity! [_this body]
+                           (swap! reported-activity conj body)))]
 
-  (let [reported-activity (atom [])
-        test-service (tk-services/service
-                  act-proto/ActivityReportingService
-                  []
-                  (report-activity! [_this body]
-                    (swap! reported-activity conj body)))]
-
-  (testutils/with-stub-puppet-conf
-      (bootstrap/with-puppetserver-running-with-services
-        app
-        (concat (bootstrap/services-from-dev-bootstrap) [test-service dummy-rbac-service])
-        (bootstrap/load-dev-config-with-overrides
-        {:jruby-puppet
-          {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
-          :webserver
-          {:ssl-cert (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
-          :ssl-key (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
-          :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
-          :ssl-crl-path (str bootstrap/server-conf-dir "/ssl/crl.pem")}
-         :authorization {:version 1
-                        :rules [{:match-request
-                                {:path "/"
-                                  :type "path"}
-                        :allow [{:rbac {:permission "cert_requests:accept_reject:*"}}]
-                        :sort-order 1
-                        :name "cert"}]}})
-        (let [request-dir (str bootstrap/server-conf-dir "/ca/requests")
-              key-pair (ssl-utils/generate-key-pair)
-              certname "test_cert"
-              subjectDN (ssl-utils/cn certname)
-              csr (ssl-utils/generate-certificate-request key-pair subjectDN)
-              saved-csr (str request-dir "/test_cert.pem")
-              status-url (str "https://localhost:8140/puppet-ca/v1/certificate_status/" certname)
-              request-opts {:ssl-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
-                            :ssl-key (str bootstrap/server-conf-dir "/ca/ca_key.pem")
-                            :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")}]
-              (ssl-utils/obj->pem! csr saved-csr)
+      (testutils/with-stub-puppet-conf
+          (bootstrap/with-puppetserver-running-with-services
+            app
+            (concat (bootstrap/services-from-dev-bootstrap) [test-service dummy-rbac-service])
+            (bootstrap/load-dev-config-with-overrides
+              {:jruby-puppet
+                {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
+                :webserver
+                {:ssl-cert (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
+                 :ssl-key (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
+                 :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+                 :ssl-crl-path (str bootstrap/server-conf-dir "/ssl/crl.pem")}
+                :authorization {:version 1
+                                :rules [{:match-request
+                                         {:path "/"
+                                          :type "path"}
+                                         :allow [{:rbac {:permission "cert_requests:accept_reject:*"}}]
+                                         :sort-order 1
+                                         :name "cert"}]}})
+            (let [request-dir (str bootstrap/server-conf-dir "/ca/requests")
+                  key-pair (ssl-utils/generate-key-pair)
+                  certname "test_cert"
+                  subjectDN (ssl-utils/cn certname)
+                  csr (ssl-utils/generate-certificate-request key-pair subjectDN)
+                  saved-csr (str request-dir "/test_cert.pem")
+                  status-url (str "https://localhost:8140/puppet-ca/v1/certificate_status/" certname)
+                  request-opts {:ssl-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+                                :ssl-key (str bootstrap/server-conf-dir "/ca/ca_key.pem")
+                                :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")}]
+                 (ssl-utils/obj->pem! csr saved-csr)
 
               (testing "Sign the waiting CSR"
                 (let [response (http-client/put
@@ -892,18 +1019,17 @@
                   (is (= 1 (count @reported-activity)))))
 
               (testing "Revoke the cert"
-                (let [response (http-client/put
-                  status-url
-                  (merge request-opts {:body "{\"desired_state\": \"revoked\"}"
-                                        :headers {"content-type" "application/json" "X-Authentication" "test"}}))
+                (let [response (http-client/put status-url
+                                 (merge request-opts {:body "{\"desired_state\": \"revoked\"}"
+                                                      :headers {"content-type" "application/json" "X-Authentication" "test"}}))
                       activity-events (get-in (second @reported-activity) [:commit :events])
                       msg-matcher (re-pattern (str "Entity test_user revoked 1 certificate: " certname))]
-                  
+
                   (is (= 204 (:status response)))
                   (is (re-find msg-matcher (:message (first activity-events))))
                   (is (= 2 (count @reported-activity)))))
-              
-              (fs/delete saved-csr))))))
+
+              (fs/delete saved-csr)))))))
 
 (deftest csr-activity-service-default
 
@@ -1059,10 +1185,52 @@
                 (is (true? (.before (.getNotBefore signed-cert) (.getNotBefore renewed-cert)))))
               (testing "new not-after is earlier than before"
                 (is (true? (.after (.getNotAfter signed-cert) (.getNotAfter renewed-cert)))))
-              (testing "new not-after should be 59 days (and some fraction) away"
+              (testing "new not-after should be 89 days (and some fraction) away"
                 (let [diff (- (.getTime (.getNotAfter renewed-cert)) (.getTime (Date.)))
                       days (.convert TimeUnit/DAYS diff TimeUnit/MILLISECONDS)]
-                  (is (= 59 days))))))))
+                  (is (= 89 days))))))))
+
+      (testing "Honors non-default auto-renewal-cert-ttl"
+        (bootstrap/with-puppetserver-running-with-mock-jrubies
+          "JRuby mocking is safe here because all of the requests are to the CA
+          endpoints, which are implemented in Clojure."
+          app
+          {:jruby-puppet
+           {:gem-path [(ks/absolute-path jruby-testutils/gem-path)]}
+           :webserver
+           {:ssl-cert     (str bootstrap/server-conf-dir "/ssl/certs/localhost.pem")
+            :ssl-key      (str bootstrap/server-conf-dir "/ssl/private_keys/localhost.pem")
+            :ssl-ca-cert  (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+            :ssl-crl-path (str bootstrap/server-conf-dir "/ssl/crl.pem")}
+           :certificate-authority
+           {:allow-auto-renewal true
+            :auto-renewal-cert-ttl "42d"}}
+          (let [generated-cert-info (generate-and-sign-a-cert! "foobar")
+                signed-cert-file (ks/temp-file)
+                _ (spit signed-cert-file (:signed-cert generated-cert-info))
+                _ (Thread/sleep 1000) ;; ensure some time has passed so the timestamps are different
+                response (http-client/post
+                           "https://localhost:8140/puppet-ca/v1/certificate_renewal"
+                           {:ssl-cert    (str signed-cert-file)
+                            :ssl-key     (str (:private-key generated-cert-info))
+                            :ssl-ca-cert (str bootstrap/server-conf-dir "/ca/ca_crt.pem")
+                            :as          :text})]
+            (is (= 200 (:status response)))
+            (let [renewed-cert-pem (:body response)
+                  renewed-cert-file (ks/temp-file)
+                  _ (spit renewed-cert-file renewed-cert-pem)
+                  renewed-cert (ssl-utils/pem->cert renewed-cert-file)
+                  signed-cert (ssl-utils/pem->cert signed-cert-file)]
+              (testing "serial number has been incremented"
+                (is (< (.getSerialNumber signed-cert) (.getSerialNumber renewed-cert))))
+              (testing "not before time stamps have changed"
+                (is (true? (.before (.getNotBefore signed-cert) (.getNotBefore renewed-cert)))))
+              (testing "new not-after is earlier than before"
+                (is (true? (.after (.getNotAfter signed-cert) (.getNotAfter renewed-cert)))))
+              (testing "new not-after should be 41 days (and some fraction) away"
+                (let [diff (- (.getTime (.getNotAfter renewed-cert)) (.getTime (Date.)))
+                      days (.convert TimeUnit/DAYS diff TimeUnit/MILLISECONDS)]
+                  (is (= 41 days))))))))
 
       (testing "returns a 400 bad request response when the ssl-client-cert is not present"
         (bootstrap/with-puppetserver-running-with-mock-jrubies
@@ -1125,10 +1293,10 @@
                 (is (true? (.before (.getNotBefore signed-cert) (.getNotBefore renewed-cert)))))
               (testing "new not-after is earlier than before"
                 (is (true? (.after (.getNotAfter signed-cert) (.getNotAfter renewed-cert)))))
-              (testing "new not-after should be 59 days (and some fraction) away"
+              (testing "new not-after should be 89 days (and some fraction) away"
                 (let [diff (- (.getTime (.getNotAfter renewed-cert)) (.getTime (Date.)))
                       days (.convert TimeUnit/DAYS diff TimeUnit/MILLISECONDS)]
-                  (is (= 59 days))))))))
+                  (is (= 89 days))))))))
 
       (testing "returns a 400 bad request response when the feature is enabled,
              and a bogus cert is supplied in the header"

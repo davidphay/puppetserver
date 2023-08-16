@@ -7,7 +7,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: puppetlabs.puppetserver \n"
-"X-Git-Ref: 4dc7b77e0db804b7a046682903df2660ec1b9304\n"
+"X-Git-Ref: b74338698b919c1bb53ba0718fb232ea7391b0d3\n"
 "Report-Msgid-Bugs-To: docs@puppet.com\n"
 "POT-Creation-Date: \n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
@@ -239,6 +239,26 @@ msgstr[0] ""
 msgstr[1] ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Found auto-renew-attribute {0}"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Deleted certificate request for {0} at {1}"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Path {0} exists but could not be deleted"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "No certificate request for {0} at expected path {1}"
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
+msgid "Calculating validity dates for {0} from ttl of {1} "
+msgstr ""
+
+#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "Saving CSR to ''{0}''"
 msgstr ""
 
@@ -278,18 +298,6 @@ msgstr ""
 msgid ""
 "To allow subject alternative names, set allow-subject-alt-names to true in "
 "your ca.conf file."
-msgstr ""
-
-#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
-msgid "Deleted certificate request for {0}"
-msgstr ""
-
-#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
-msgid "Path {0} exists but could not be deleted"
-msgstr ""
-
-#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
-msgid "No certificate request for {0} at expected path {1}"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
@@ -338,10 +346,6 @@ msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj
 msgid "CA already initialized for SSL"
-msgstr ""
-
-#: src/clj/puppetlabs/puppetserver/certificate_authority.clj
-msgid "Removed certificate request for {0} at ''{1}''"
 msgstr ""
 
 #: src/clj/puppetlabs/puppetserver/certificate_authority.clj

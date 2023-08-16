@@ -70,6 +70,7 @@
         (rr/not-found (i18n/tru "Could not find certificate_request {0}" subject)))
       (rr/content-type "text/plain")))
 
+
 (schema/defn handle-put-certificate-request!
   [ca-settings :- ca/CaSettings
    report-activity
@@ -139,9 +140,12 @@
    ca-settings :- ca/CaSettings]
   (let [response (ca/delete-certificate-request! ca-settings subject)
         outcomes->codes {:success 204 :not-found 404 :error 500}]
-    (-> (rr/response (:message response))
-        (rr/status ((response :outcome) outcomes->codes))
-        (rr/content-type "text/plain"))))
+    (if (not= (response :outcome) :success) 
+      (-> (rr/response (:message response)) 
+          (rr/status ((response :outcome) outcomes->codes))
+          (rr/content-type "text/plain"))
+      (-> (rr/response (:message response))
+          (rr/status ((response :outcome) outcomes->codes))))))
 
 (schema/defn handle-get-ca-expirations
   [ca-settings :- ca/CaSettings]

@@ -26,7 +26,6 @@
             [puppetlabs.puppetserver.common :as common]
             [puppetlabs.puppetserver.ringutils :as ringutils]
             [puppetlabs.ssl-utils.core :as utils]
-            [clj-yaml.core :as yaml]
             [puppetlabs.puppetserver.shell-utils :as shell-utils]
             [puppetlabs.i18n.core :as i18n]))
 
@@ -242,10 +241,10 @@
   60)
 
 (def default-auto-ttl-renewal
-  "60d") ; 60 days by default
+  "90d") ; 90 days by default
 
 (def default-auto-ttl-renewal-seconds
-  (duration-str->sec default-auto-ttl-renewal)) ; 60 days by default
+  (duration-str->sec default-auto-ttl-renewal)) ; 90 days by default
 
 (schema/defn ^:always-validate initialize-ca-config
   "Adds in default ca config keys/values, which may be overwritten if a value for
@@ -338,6 +337,10 @@
    :pp_authorization    "1.3.6.1.4.1.34380.1.3.1"
    :pp_auth_role        "1.3.6.1.4.1.34380.1.3.13"
    :pp_cli_auth         cli-auth-oid})
+
+;; OID for the attribute that indicates if the agent supports auto-renewal or not
+(def pp_auth_auto_renew-attribute
+  "1.3.6.1.4.1.34380.1.3.2",)
 
 (def netscape-comment-value
   "Standard value applied to the Netscape Comment extension for certificates"
@@ -496,6 +499,10 @@
   [cert-or-csr :- CertificateOrCSR]
   (into (mapv (partial str "IP:") (utils/get-subject-ip-alt-names cert-or-csr))
         (mapv (partial str "DNS:") (utils/get-subject-dns-alt-names cert-or-csr))))
+
+(schema/defn get-csr-attributes :- utils/SSLMultiValueAttributeList
+  [csr :- PKCS10CertificationRequest]
+  (utils/get-attributes csr))
 
 (schema/defn authorization-extensions :- {schema/Str schema/Str}
   "Get the authorization extensions for the certificate or CSR.
@@ -1001,7 +1008,7 @@
   certificate extensions from the `extensions_requests` section."
   [csr-attributes-file :- schema/Str]
   (if (fs/file? csr-attributes-file)
-    (let [csr-attrs (yaml/parse-string (slurp csr-attributes-file))
+    (let [csr-attrs (common/parse-yaml (slurp csr-attributes-file))
           ext-req (:extension_requests csr-attrs)]
       (map (fn [[oid value]]
              {:oid (or (get puppet-short-names oid)
@@ -1022,7 +1029,7 @@
         csr-attr-exts (create-csr-attrs-exts csr-attributes)
         base-ext-list [(utils/netscape-comment
                          netscape-comment-value)
-                       (utils/authority-key-identifier ca-cert)
+                       (utils/authority-key-identifier-options ca-cert)
                        (utils/basic-constraints-for-non-ca true)
                        (utils/ext-key-usages
                          [ssl-server-cert ssl-client-cert] true)
@@ -1386,7 +1393,7 @@
         csr-ext-list (utils/get-extensions csr)
         base-ext-list [(utils/netscape-comment
                          netscape-comment-value)
-                       (utils/authority-key-identifier
+                       (utils/authority-key-identifier-options
                          cacert)
                        (utils/basic-constraints-for-non-ca true)
                        (utils/ext-key-usages
@@ -1438,15 +1445,51 @@
     (let [[msg signee certnames ip] (generate-cert-message-from-request request subjects activity-type)]
       (report-cert-event report-activity msg signee certnames ip activity-type))))
 
+(schema/defn supports-auto-renewal? :- schema/Bool
+  "Given a csr, determine if the requester is capable of supporting auto-renewal by looking for a specific attribute"
+  [csr]
+  (if-let [auto-renew-attribute (first (filter #(= pp_auth_auto_renew-attribute (:oid %)) (get-csr-attributes csr)))]
+    (do
+      (log/debug (i18n/trs "Found auto-renew-attribute {0}" (first (:values auto-renew-attribute))))
+      ;; the values is a sequence of results, assume the first one is correct.
+      (= "true" (first (:values auto-renew-attribute))))
+    false))
+
+(schema/defn ^:always-validate delete-certificate-request! :- OutcomeInfo
+  "Delete pending certificate requests for subject"
+  [{:keys [csrdir]} :- CaSettings
+   subject :- schema/Str]
+  (let [csr-path (path-to-cert-request csrdir subject)]
+
+    (if (fs/exists? csr-path)
+      (if (fs/delete csr-path)
+        (let [msg (i18n/trs "Deleted certificate request for {0} at {1}" subject csr-path)]
+          (log/debug msg)
+          {:outcome :success
+           :message msg})
+        (let [msg (i18n/trs "Path {0} exists but could not be deleted" csr-path)]
+          (log/error msg)
+          {:outcome :error
+           :message msg}))
+      (let [msg (i18n/trs "No certificate request for {0} at expected path {1}"
+                          subject csr-path)]
+        (log/warn msg)
+        {:outcome :not-found
+         :message msg}))))
+
 (schema/defn ^:always-validate
   autosign-certificate-request!
   "Given a subject name, their certificate request, and the CA settings
   from Puppet, auto-sign the request and write the certificate to disk."
   [subject :- schema/Str
    csr :- CertificateRequest
-   {:keys [cacert cakey signeddir ca-ttl] :as ca-settings} :- CaSettings
+   {:keys [cacert cakey signeddir ca-ttl allow-auto-renewal auto-renewal-cert-ttl] :as ca-settings} :- CaSettings
    report-activity]
-  (let [validity    (cert-validity-dates ca-ttl)
+  (let [renewal-ttl (if (and allow-auto-renewal (supports-auto-renewal? csr))
+                      auto-renewal-cert-ttl
+                      ca-ttl)
+        _           (log/debug (i18n/trs "Calculating validity dates for {0} from ttl of {1} " subject renewal-ttl))
+        validity    (cert-validity-dates renewal-ttl)
         ;; if part of a CA bundle, the intermediate CA will be first in the chain
         cacert      (utils/pem->ca-cert cacert cakey)
         signed-cert (utils/sign-certificate (utils/get-subject-from-x509-certificate
@@ -1462,6 +1505,7 @@
                                              cacert))]
     (write-cert-to-inventory! signed-cert ca-settings)
     (write-cert signed-cert (path-to-cert signeddir subject))
+    (delete-certificate-request! ca-settings subject)
     (report-activity [subject] "signed")))
 
 (schema/defn ^:always-validate
@@ -1475,7 +1519,7 @@
     (write-csr csr csr-path)))
 
 (schema/defn validate-duplicate-cert-policy!
-  "Throw a slingshot exception if allow-duplicate-certs is false
+  "Throw a slingshot exception if allow-duplicate-certs is false,
    and we already have a certificate or CSR for the subject.
    The exception map will look like:
    {:kind :duplicate-cert
@@ -1552,6 +1596,7 @@
                            (i18n/tru "To allow subject alternative names, set allow-subject-alt-names to true in your ca.conf file.")
                            (i18n/tru "Then restart the puppetserver and try signing this certificate again."))})))))))
 
+
 (schema/defn ^:always-validate process-csr-submission!
   "Given a CSR for a subject (typically from the HTTP endpoint),
    perform policy checks and sign or save the CSR (based on autosign).
@@ -1573,29 +1618,8 @@
         (ensure-no-authorization-extensions! csr allow-authorization-extensions)
         (validate-extensions! (utils/get-extensions csr))
         (validate-csr-signature! csr)
-        (autosign-certificate-request! subject csr settings report-activity)
-        (fs/delete (path-to-cert-request csrdir subject))))))
+        (autosign-certificate-request! subject csr settings report-activity)))))
 
-(schema/defn ^:always-validate delete-certificate-request! :- OutcomeInfo
-  "Delete pending certificate requests for subject"
-  [{:keys [csrdir]} :- CaSettings
-   subject :- schema/Str]
-  (let [csr-path (path-to-cert-request csrdir subject)]
-    (if (fs/exists? csr-path)
-      (if (fs/delete csr-path)
-        (let [msg (i18n/trs "Deleted certificate request for {0}" subject)]
-          (log/debug msg)
-          {:outcome :success
-           :message msg})
-        (let [msg (i18n/trs "Path {0} exists but could not be deleted" csr-path)]
-          (log/error msg)
-          {:outcome :error
-           :message msg}))
-      (let [msg (i18n/trs "No certificate request for {0} at expected path {1}"
-                  subject csr-path)]
-        (log/warn msg)
-        {:outcome :not-found
-         :message msg}))))
 
 (schema/defn ^:always-validate
   get-certificate-revocation-list :- schema/Str
@@ -1884,9 +1908,7 @@
    subject :- schema/Str
    report-activity]
   (let [csr-path (path-to-cert-request csrdir subject)]
-    (autosign-certificate-request! subject (utils/pem->csr csr-path) settings report-activity)
-    (fs/delete csr-path)
-    (log/debug (i18n/trs "Removed certificate request for {0} at ''{1}''" subject csr-path))))
+    (autosign-certificate-request! subject (utils/pem->csr csr-path) settings report-activity)))
 
 (schema/defn filter-already-revoked-serials :- [schema/Int]
   "Given a list of serials and Puppet's CA CRL, returns vector of serials with
@@ -2028,7 +2050,7 @@
   shortnames"
   [custom-oid-mapping-file :- schema/Str]
   (if (fs/file? custom-oid-mapping-file)
-    (let [oid-mappings (:oid_mapping (yaml/parse-string (slurp custom-oid-mapping-file)))]
+    (let [oid-mappings (:oid_mapping (common/parse-yaml (slurp custom-oid-mapping-file)))]
       (into {} (for [[oid names] oid-mappings] [(name oid) (keyword (:shortname names))])))
     (log/debug (i18n/trs "No custom OID mapping configuration file found at {0}, custom OID mappings will not be loaded"
                 custom-oid-mapping-file))))
@@ -2106,9 +2128,9 @@
   "Given a certificate and CaSettings create a new signed certificate using the public key from the certificate.
   It recreates all the extensions in the original certificate."
   [certificate :- X509Certificate
-   {:keys [cacert cakey auto_renewal_cert_ttl] :as ca-settings} :- CaSettings
+   {:keys [cacert cakey auto-renewal-cert-ttl] :as ca-settings} :- CaSettings
    report-activity]
-  (let [validity (cert-validity-dates (or auto_renewal_cert_ttl default-auto-ttl-renewal-seconds))
+  (let [validity (cert-validity-dates (or auto-renewal-cert-ttl default-auto-ttl-renewal-seconds))
         cacert (utils/pem->ca-cert cacert cakey)
         cert-subject (utils/get-subject-from-x509-certificate certificate)
         cert-name (utils/x500-name->CN cert-subject)

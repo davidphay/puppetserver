@@ -729,7 +729,7 @@
       (is (= false (:allow-auto-renewal settings))))
 
     (testing "auto-renewal-cert-ttl"
-      (is (= "60d" (:auto-renewal-cert-ttl settings))))
+      (is (= "90d" (:auto-renewal-cert-ttl settings))))
 
     (testing "Does not replace files if they all exist"
       (let [files (-> (ca/settings->cadir-paths (assoc settings :enable-infra-crl false))
@@ -1221,7 +1221,15 @@
                   (is (false? (fs/exists? path)))
                   (ca/process-csr-submission! subject csr settings (constantly nil))
                   (is (true? (fs/exists? path)))
-                  (fs/delete path)))))))
+                  (fs/delete path)))))
+          (testing "writes indicator file when asked to"
+            (let [subject "meow"
+                  path (ca/path-to-cert-request (:csrdir settings) subject)
+                  csr  (io/input-stream (test-pem-file "meow-bad-extension.pem"))]
+              (is (false? (fs/exists? path)))
+              (ca/process-csr-submission! subject csr settings (constantly nil))
+              (is (true? (fs/exists? path)))
+              (fs/delete path)))))
 
       (testing "when autosign is true, all policies are checked, and"
         (let [settings (assoc settings :autosign true)]
@@ -1963,6 +1971,11 @@
 (deftest renew-certificate!-test
   (testing "creates a new signed cert"
     (let [settings (testutils/ca-sandbox! cadir)
+          ;; auto-renewal-cert-ttl is expected to be an int
+          ;; unit tests skip some of the conversion flow so
+          ;; transform the duration here
+          converted-auto-renewal-cert-ttl (ca/duration-str->sec (:auto-renewal-cert-ttl settings))
+          updated-settings (assoc settings :auto-renewal-cert-ttl converted-auto-renewal-cert-ttl)
           ca-cert (create-ca-cert "ca1" 1)
           keypair (utils/generate-key-pair)
           subject (utils/cn "foo")
@@ -1982,7 +1995,7 @@
         (ca/write-cert signed-cert expected-cert-path)
         (is (fs/exists? expected-cert-path)))
       (Thread/sleep 1000) ;; ensure there is some time elapsed between the two
-      (let [renewed-cert (ca/renew-certificate! signed-cert settings (constantly nil))]
+      (let [renewed-cert (ca/renew-certificate! signed-cert updated-settings (constantly nil))]
         (is (some? renewed-cert))
         (testing "serial number has increased"
           (is (< (.getSerialNumber signed-cert) (.getSerialNumber renewed-cert)))
@@ -1991,10 +2004,10 @@
           (is (= -1 (.compareTo (.getNotBefore signed-cert) (.getNotBefore renewed-cert)))))
         (testing "new not-after is later than before"
           (is (= -1 (.compareTo (.getNotAfter signed-cert) (.getNotAfter renewed-cert)))))
-        (testing "new not-after should be 59 days (and some faction) away"
+        (testing "new not-after should be 89 days (and some faction) away"
           (let [diff (- (.getTime (.getNotAfter renewed-cert)) (.getTime (Date.)))
                 days (.convert TimeUnit/DAYS diff TimeUnit/MILLISECONDS)]
-            (is (= 59 days))))
+            (is (= 89 days))))
         (testing "certificate should have been removed"
           (is (not (fs/exists? expected-cert-path))))
         (testing "extensions are preserved"
@@ -2012,3 +2025,20 @@
             ;; for ease of testing, just test the first and last
             (is (= "0x0006" (first last-entry-fields)))
             (is (= "/CN=foo" (last last-entry-fields)))))))))
+(deftest supports-auto-renewal?-test
+  (let [keypair (utils/generate-key-pair)
+        subject (utils/cn "foo")]
+    (testing "should not support auto-renewal"
+      (is (false? (ca/supports-auto-renewal? (utils/generate-certificate-request keypair subject [] []))))
+      (is (false? (ca/supports-auto-renewal? (utils/generate-certificate-request keypair subject [] [{:oid "1.3.6.1.4.1.34380.1.3.2" :value false}]))))
+      (is (false? (ca/supports-auto-renewal? (utils/generate-certificate-request keypair subject [] [{:oid "1.3.6.1.4.1.34380.1.3.2" :value "false"}])))))
+    (testing "should support auto-renewal"
+      (is (true? (ca/supports-auto-renewal? (utils/generate-certificate-request keypair subject [] [{:oid "1.3.6.1.4.1.34380.1.3.2" :value true}]))))
+      (is (true? (ca/supports-auto-renewal? (utils/generate-certificate-request keypair subject [] [{:oid "1.3.6.1.4.1.34380.1.3.2" :value "true"}])))))))
+
+(deftest get-csr-attributes-test
+  (testing "extract attribute from CSR"
+    (let [keypair (utils/generate-key-pair)
+          subject (utils/cn "foo")
+          csr  (utils/generate-certificate-request keypair subject [] [{:oid "1.3.6.1.4.1.34380.1.3.2" :value true}])]
+      (is (= [{:oid "1.3.6.1.4.1.34380.1.3.2", :values ["true"]}] (ca/get-csr-attributes csr))))))

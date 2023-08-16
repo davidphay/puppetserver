@@ -1,4 +1,4 @@
-(def ps-version "8.0.1-SNAPSHOT")
+(def ps-version "8.2.1-SNAPSHOT")
 
 (defn deploy-info
   [url]
@@ -27,13 +27,12 @@
 
   :min-lein-version "2.9.1"
 
-  :parent-project {:coords [puppetlabs/clj-parent "6.0.0"]
+  :parent-project {:coords [puppetlabs/clj-parent "7.1.0"]
                    :inherit [:managed-dependencies]}
 
   :dependencies [[org.clojure/clojure]
 
                  [slingshot]
-                 [clj-commons/clj-yaml]
                  [org.yaml/snakeyaml]
                  [commons-lang]
                  [commons-io]
@@ -45,6 +44,7 @@
                  [liberator]
                  [org.apache.commons/commons-exec]
                  [io.dropwizard.metrics/metrics-core]
+                 [org.yaml/snakeyaml "2.0"]
 
                  ;; We do not currently use this dependency directly, but
                  ;; we have documentation that shows how users can use it to
@@ -172,7 +172,7 @@
                                                [puppetlabs/jruby-utils]
                                                [puppetlabs/puppetserver ~ps-version]
                                                [puppetlabs/trapperkeeper-webserver-jetty9]]
-                      :plugins [[puppetlabs/lein-ezbake "2.4.1"]]
+                      :plugins [[puppetlabs/lein-ezbake "2.5.3"]]
                       :name "puppetserver"}
              :uberjar {:dependencies [[org.bouncycastle/bcpkix-jdk18on]
                                       [puppetlabs/trapperkeeper-webserver-jetty9]]
